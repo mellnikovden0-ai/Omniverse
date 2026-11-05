@@ -12778,29 +12778,8 @@ do
         end
     end)
 
-    do
-        local keep = { Home = true, Main = true, Combat = true, Misc = true }
-        local sidebar
-        for _, ch in ipairs(win:GetChildren()) do
-            if ch:IsA("Frame") and ch.Size == UDim2.new(0, 78, 1, 0) then sidebar = ch break end
-        end
-        if sidebar then
-            local visible = {}
-            for _, b in ipairs(sidebar:GetChildren()) do
-                if b:IsA("TextButton") and b.Name ~= "" then
-                    if keep[b.Name] then
-                        table.insert(visible, b)
-                    else
-                        b.Visible = false
-                    end
-                end
-            end
-            table.sort(visible, function(a, b) return a.Position.Y.Offset < b.Position.Y.Offset end)
-            for i, b in ipairs(visible) do
-                b.Position = UDim2.fromOffset(19, 104 + (i - 1) * 42)
-            end
-        end
-    end
+    -- NOIR V5: вкладки больше не скрываются (старый "compact sidebar" удалён) —
+    -- все 7 вкладок NovaUI (Home/Parry/Main/Visuals/World/Misc/Settings) остаются видимыми.
 
     win.Visible = true
     winScale.Scale = .68
