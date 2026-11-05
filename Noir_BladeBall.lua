@@ -10416,7 +10416,7 @@ do
         BackgroundColor3 = C.border, BackgroundTransparency = .55, BorderSizePixel = 0, ZIndex = 0 })
 end
 local logoHolder = makeLogoMark(sidebar, 54, UDim2.new(.5, 0, 0, 18), true, 2)
-local wordmark = text(sidebar, "NOIR", 10, UDim2.new(0, 0, 0, 76), false)
+local wordmark = text(sidebar, "NOIR V5", 10, UDim2.new(0, 0, 0, 76), false)
 wordmark.Size = UDim2.new(1, 0, 0, 12); wordmark.TextXAlignment = Enum.TextXAlignment.Center
 wordmark.Font = Enum.Font.GothamBold; wordmark.TextColor3 = C.accent2; wordmark.TextTransparency = .15
 do
@@ -16487,6 +16487,13 @@ getgenv()._ZX_SetupWorldTab()
 
 end
 __noirFeatures()
+
+-- NOIR v5: маркер сборки — уведомление при загрузке (видно, что работает новый файл)
+task.delay(2, function()
+    pcall(function()
+        host.Notify("NOIR v5 loaded • 7 tabs: Home / Parry / Main / Visuals / World / Misc / Settings • Auto Parry boost", 5)
+    end)
+end)
 
 do
     pcall(function()
