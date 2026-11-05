@@ -514,18 +514,23 @@ pcall(function()
 end)  
   
 System.ball = {}  
-function System.ball.get()  
-    local balls=Workspace:FindFirstChild('Balls'); if not balls then return nil end  
-    for _,ball in pairs(balls:GetChildren()) do  
-        if ball:GetAttribute('realBall') then ball.CanCollide=false; return ball end  
-    end; return nil  
-end  
-function System.ball.get_all()  
-    local balls_table={}; local balls=Workspace:FindFirstChild('Balls')  
-    if not balls then return balls_table end  
-    for _,ball in pairs(balls:GetChildren()) do  
-        if ball:GetAttribute('realBall') then ball.CanCollide=false; table.insert(balls_table,ball) end  
-    end; return balls_table  
+-- NOIR perf: кэш скана папки Balls (TTL 0.15с) — GetChildren/GetAttribute не дёргаются каждый кадр
+local __ballScan, __ballScanAt = nil, 0
+function System.ball.get_all()
+    local now=os.clock()
+    if __ballScan and (now-__ballScanAt) < 0.15 then return __ballScan end
+    __ballScanAt=now
+    local balls_table={}; local balls=Workspace:FindFirstChild('Balls')
+    if not balls then __ballScan=balls_table; return balls_table end
+    for _,ball in pairs(balls:GetChildren()) do
+        if ball.Parent and ball:GetAttribute('realBall') then ball.CanCollide=false; table.insert(balls_table,ball) end
+    end
+    __ballScan=balls_table
+    return balls_table
+end
+function System.ball.get()
+    local list=System.ball.get_all()
+    return list[1] or nil
 end  
   
 System.player = {}  
@@ -663,7 +668,13 @@ function System.detection.is_curved(selectedBall, pingSeconds)
         System.detection.states[ball]=props
     end
     props.__curving=sharedProps.__curving  
-    local zoomies=ball:FindFirstChild("zoomies"); if not zoomies then return false end  
+    -- NOIR perf: zoomies кэшируется в состоянии мяча
+    local zoomies=props.zoomies
+    if not zoomies or zoomies.Parent ~= ball then
+        zoomies=ball:FindFirstChild("zoomies")
+        props.zoomies=zoomies
+    end
+    if not zoomies then return false end  
     local velocity=zoomies.VectorVelocity; local speed=velocity.Magnitude  
     if speed < 1 then return false end  
     local ball_dir=velocity.Unit; local char=LocalPlayer.Character  
@@ -799,6 +810,8 @@ end)
   
 System.triggerbot = {}  
 local triggerbotCooldown = false  
+-- NOIR perf: кэш SingularityCape для триггербота
+local triggerCapeScanAt, triggerCapeRef = 0, nil
   
 function System.triggerbot.trigger(ball)  
     if triggerbotCooldown then return end  
@@ -834,11 +847,17 @@ end
   
 function System.triggerbot.loop()  
     if not System.__triggerbot.__enabled then return end  
-    if LocalPlayer.Character and LocalPlayer.Character.PrimaryPart and  
-       LocalPlayer.Character.PrimaryPart:FindFirstChild('SingularityCape') then return end  
-    local balls=Workspace:FindFirstChild('Balls'); if not balls then return end  
-    for _,ball in pairs(balls:GetChildren()) do  
-        if ball:IsA('BasePart') and ball:GetAttribute('target')==LocalPlayer.Name then  
+    -- NOIR perf: список мячей из кэша, SingularityCape раз в 0.5с
+    if os.clock() >= (triggerCapeScanAt or 0) then
+        triggerCapeScanAt = os.clock() + 0.5
+        local ch = LocalPlayer.Character
+        local rp = ch and ch.PrimaryPart
+        triggerCapeRef = (rp and rp:FindFirstChild('SingularityCape')) or nil
+    end
+    if triggerCapeRef and triggerCapeRef.Parent then return end  
+    local balls=System.ball.get_all()
+    for _,ball in pairs(balls) do  
+        if ball.Parent and ball:IsA('BasePart') and ball:GetAttribute('target')==LocalPlayer.Name then  
             System.triggerbot.trigger(ball)  
             break  
         end  
@@ -948,6 +967,8 @@ function System.auto_spam.spam_service(self)
     return maximum_spam_distance - maximum_dot  
 end  
   
+-- NOIR perf: пинг для спама читаем раз в 0.2с
+local autoSpamPingMs, autoSpamPingAt = 0, 0
 function System.auto_spam.start()  
     if System.__properties.__connections.__auto_spam then  
         System.__properties.__connections.__auto_spam:Disconnect()  
@@ -965,7 +986,13 @@ function System.auto_spam.start()
         local ball_properties = System.auto_spam:get_ball_properties()  
         local entity_properties = System.auto_spam:get_entity_properties()  
         if not ball_properties or not entity_properties or not Closest_Entity or not Closest_Entity.PrimaryPart then return end  
-        local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()  
+        -- NOIR perf: пинг из кэша 0.2с
+        if os.clock() - autoSpamPingAt > 0.2 then
+            autoSpamPingAt = os.clock()
+            local okSP, sp = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+            if okSP and sp then autoSpamPingMs = sp end
+        end
+        local ping = autoSpamPingMs
         local ping_threshold = math.clamp(ping / 10, 1, 40)  
         local spam_accuracy = System.auto_spam.spam_service({  
             Ball_Properties = ball_properties,  
@@ -1007,6 +1034,12 @@ end
 System.autoparry = {states = setmetatable({}, {__mode = "k"})}
 -- NOIR perf: пинг читаем раз в 0.2с (кэш), а не на каждый мяч каждый кадр
 local autoparryPingMs, autoparryPingAt = 0, 0
+-- NOIR perf: кэши редких сканов для горячего цикла авто-парри
+local autoparryGenv, autoparryGenvAt = nil, 0
+local trainingScanAt, trainingBallCache = 0, nil
+local tornadoScanAt, tornadoRefCache = 0, nil
+local capeScanAt, capeRefCache = 0, nil
+local abilityScanAt, abilityCDCache = 0, nil
 function System.autoparry.state(ball)
     local state = System.autoparry.states[ball]
     local target = ball:GetAttribute("target")
@@ -1035,24 +1068,58 @@ function System.autoparry.start()
             local okP, pP = pcall(function() return Stats.Network.ServerStatsItem['Data Ping']:GetValue() end)
             if okP and pP then autoparryPingMs = pP end
         end
-        local genvFlags = getgenv()
+        -- NOIR perf: getgenv() и TrainingBalls — по кэшу (0.2с/0.3с), не каждый кадр
+        if os.clock() - autoparryGenvAt > 0.2 then
+            autoparryGenvAt = os.clock()
+            autoparryGenv = getgenv()
+        end
+        local genvFlags = autoparryGenv or getgenv()
         if System.__triggerbot.__enabled then return end
         if genvFlags.BallVelocityAbove800 then return end
-        local ballsFolder=Workspace:FindFirstChild('Balls')
-        local balls=ballsFolder and ballsFolder:GetChildren() or {}
-        local training_ball=nil
-        if Workspace:FindFirstChild("TrainingBalls") then
-            for _,Instance in pairs(Workspace.TrainingBalls:GetChildren()) do
-                if Instance:GetAttribute("realBall") then training_ball=Instance; break end
+        local balls=System.ball.get_all()
+        if os.clock() - trainingScanAt > 0.3 then
+            trainingScanAt = os.clock()
+            trainingBallCache = nil
+            local tb=Workspace:FindFirstChild("TrainingBalls")
+            if tb then
+                for _,tbi in pairs(tb:GetChildren()) do
+                    if tbi:GetAttribute("realBall") then trainingBallCache=tbi; break end
+                end
             end
         end
+        local training_ball=trainingBallCache
+        -- NOIR perf: Tornado ищем раз в 0.25с
+        if os.clock() - tornadoScanAt > 0.25 then
+            tornadoScanAt = os.clock()
+            tornadoRefCache = Runtime:FindFirstChild('Tornado')
+        end
         for _,ball in pairs(balls) do
-            if not ball or not ball:GetAttribute('realBall') then continue end
-            ball.CanCollide=false
-            local zoomies=ball:FindFirstChild('zoomies'); if not zoomies then continue end  
+            if not ball or not ball.Parent or not ball:GetAttribute('realBall') then continue end
             local state = System.autoparry.state(ball)
             if os.clock() < state.readyAt then continue end
+            -- NOIR perf: скан раз в 0.2с; пока zoomies не найдены — пересканируем каждые 0.05с
+            -- (быстрый мяч не будет пропущен из-за кэша)
+            if os.clock() >= (state.nextScan or 0) or not state.zoomies then
+                state.nextScan = os.clock() + (state.zoomies and 0.2 or 0.05)
+                state.zoomies = ball:FindFirstChild('zoomies')
+                state.combo = ball:FindFirstChild('ComboCounter')
+                if os.clock() >= (state.ccAt or 0) then
+                    state.ccAt = os.clock() + 0.25
+                    ball.CanCollide=false
+                end
+                local vfx=ball:FindFirstChild('AeroDynamicSlashVFX')
+                if vfx then vfx:Destroy(); System.__properties.__tornado_time=tick() end
+            end
+            if state.combo and state.combo.Parent == ball then continue end
+            local zoomies=state.zoomies
+            if not zoomies or zoomies.Parent ~= ball then continue end
             local ball_target=state.target
+            -- NOIR perf: дорогая математика и is_curved только когда мяч целится в нас
+            if ball_target ~= LocalPlayer.Name then continue end
+            if tornadoRefCache and tornadoRefCache.Parent == Runtime then
+                if (tick()-System.__properties.__tornado_time) <
+                   (tonumber(tornadoRefCache:GetAttribute('TornadoTime')) or 1)+0.314159 then continue end
+            end
             local velocity=zoomies.VectorVelocity
             local distance=(LocalPlayer.Character.PrimaryPart.Position-ball.Position).Magnitude
             local ping=autoparryPingMs/10
@@ -1061,26 +1128,29 @@ function System.autoparry.start()
             local speed_divisor=(2.4+capped_speed_diff*0.002)*System.__properties.__divisor_multiplier  
             local parry_accuracy=ping_threshold+math.max(speed/speed_divisor,9.5)  
             local curved=System.detection.is_curved(ball, autoparryPingMs/1000)
-            if ball:FindFirstChild('AeroDynamicSlashVFX') then  
-                ball.AeroDynamicSlashVFX:Destroy(); System.__properties.__tornado_time=tick()  
-            end  
-            if Runtime:FindFirstChild('Tornado') then  
-                if (tick()-System.__properties.__tornado_time) <  
-                   (Runtime.Tornado:GetAttribute('TornadoTime') or 1)+0.314159 then continue end  
-            end  
-            if ball_target==LocalPlayer.Name and curved then continue end  
-            if ball:FindFirstChild('ComboCounter') then continue end  
-            if LocalPlayer.Character.PrimaryPart:FindFirstChild('SingularityCape') then continue end  
+            if curved then continue end  
+            -- NOIR perf: SingularityCape раз в 0.5с, не каждый кадр
+            local rootPart=LocalPlayer.Character.PrimaryPart
+            if os.clock() >= (capeScanAt or 0) then
+                capeScanAt = os.clock() + 0.5
+                capeRefCache = rootPart:FindFirstChild('SingularityCape')
+            end
+            if capeRefCache and capeRefCache.Parent == rootPart then continue end  
             if System.__config.__detections.__infinity and System.__properties.__infinity_active then continue end  
             if System.__config.__detections.__deathslash and System.__properties.__deathslash_active then continue end  
             if System.__config.__detections.__timehole and System.__properties.__timehole_active then continue end  
             if System.__config.__detections.__slashesoffury and System.__properties.__slashesoffury_active then continue end  
             if ball_target==LocalPlayer.Name and distance <= parry_accuracy then  
                 if genvFlags.AutoAbility then
-                    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-                    local hotbar = playerGui and playerGui:FindFirstChild("Hotbar")
-                    local ability = hotbar and hotbar:FindFirstChild("Ability")
-                    local AbilityCD = ability and ability:FindFirstChild("UIGradient")  
+                    -- NOIR perf: Hotbar/Ability кэшируются на 0.5с
+                    if os.clock() >= (abilityScanAt or 0) then
+                        abilityScanAt = os.clock() + 0.5
+                        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+                        local hotbar = playerGui and playerGui:FindFirstChild("Hotbar")
+                        local ability = hotbar and hotbar:FindFirstChild("Ability")
+                        abilityCDCache = ability and ability:FindFirstChild("UIGradient") or nil
+                    end
+                    local AbilityCD = (abilityCDCache and abilityCDCache.Parent) and abilityCDCache or nil
                     if AbilityCD and AbilityCD.Offset.Y==0.5 then  
                         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Abilities") then  
                             local abilities=LocalPlayer.Character.Abilities  
@@ -1109,11 +1179,19 @@ function System.autoparry.start()
                 local sent
                 if genvFlags.AutoParryMode=="Keypress" then sent = System.parry.keypress()
                 else sent = System.parry.execute_action() end
-                if sent then state.readyAt = os.clock() + 1 end
+                -- NOIR v6: ретрай через 0.5с вместо 1с — при неудачном парри (лаг) второй
+                -- шанс приходит вдвое быстрее; при успехе target меняется и readyAt сбрасывается
+                if sent then state.readyAt = os.clock() + 0.5 end
             end
         end  
         if training_ball then  
-            local zoomies=training_ball:FindFirstChild('zoomies')  
+            -- NOIR perf: zoomies тренировочного мяча кэшируется в его состоянии
+            local tstate = System.autoparry.state(training_ball)
+            local zoomies = tstate.zoomies
+            if not zoomies or zoomies.Parent ~= training_ball then
+                zoomies = training_ball:FindFirstChild('zoomies')
+                tstate.zoomies = zoomies
+            end
             if zoomies then  
                 local state = System.autoparry.state(training_ball)
                 if os.clock() >= state.readyAt then  
@@ -1130,7 +1208,7 @@ function System.autoparry.start()
                         local sent
                         if genvFlags.AutoParryMode=="Keypress" then sent = System.parry.keypress()
                         else sent = System.parry.execute_action() end
-                        if sent then state.readyAt = os.clock() + 1 end
+                        if sent then state.readyAt = os.clock() + 0.5 end
                     end  
                 end  
             end  
@@ -10416,7 +10494,7 @@ do
         BackgroundColor3 = C.border, BackgroundTransparency = .55, BorderSizePixel = 0, ZIndex = 0 })
 end
 local logoHolder = makeLogoMark(sidebar, 54, UDim2.new(.5, 0, 0, 18), true, 2)
-local wordmark = text(sidebar, "NOIR V5", 10, UDim2.new(0, 0, 0, 76), false)
+local wordmark = text(sidebar, "NOIR V6", 10, UDim2.new(0, 0, 0, 76), false)
 wordmark.Size = UDim2.new(1, 0, 0, 12); wordmark.TextXAlignment = Enum.TextXAlignment.Center
 wordmark.Font = Enum.Font.GothamBold; wordmark.TextColor3 = C.accent2; wordmark.TextTransparency = .15
 do
@@ -13666,19 +13744,8 @@ getgenv().Connections_Manager = Connections_Manager
 local Player = Players.LocalPlayer
 
 local function get_real_ball()
-    local balls = workspace:FindFirstChild('Balls')
-    if not balls then
-        return nil
-    end
-
-    for _, ball in pairs(balls:GetChildren()) do
-        if ball:GetAttribute("realBall") then
-            ball.CanCollide = false
-            return ball
-        end
-    end
-
-    return nil
+    -- NOIR perf: кэшированный System.ball.get() вместо скана каждый кадр
+    return System.ball.get()
 end
 
 local AutoPlayState = {
@@ -14057,7 +14124,8 @@ if (#"">2) then local _n=math.floor(3.14) end
     end
 
     if not getgenv().BallTrailEnabled then
-        clear_ball_trail(ball)
+        -- NOIR perf: чистим один раз, а не каждый кадр (5 FindFirstChild/кадр -> 0)
+        if ballTrailState[ball] then clear_ball_trail(ball) end
         return
     end
 
@@ -14130,8 +14198,12 @@ if ((1/1)==0) then for _i=1,0 do end end
     end
 end
 
+-- NOIR perf: трейл мяча обновляется 10 раз/с вместо каждого кадра
+local __trailLast = 0
 RunService.Heartbeat:Connect(function()
-    rainbowHue = (rainbowHue + 1) % (379-19)
+    if os.clock() - __trailLast < 0.1 then return end
+    __trailLast = os.clock()
+    rainbowHue = (rainbowHue + 6) % (379-19)
     local ball = get_real_ball()
     if ball then
         apply_ball_trail(ball)
@@ -15183,20 +15255,8 @@ local BallStatsState = {
 }
 
 local function get_real_ball()
-    local balls = workspace:FindFirstChild('Balls')
-    if ((1+1)==2) and (not balls) then
-        return nil
-    end
-
-    for _, ball in pairs(balls:GetChildren()) do
-        if ball:GetAttribute("realBall") then
-            ball.CanCollide = false
-            return ball
-        end
-    end
-if (type({})~="table") then local _t=table.concat({},"") end
-
-    return nil
+    -- NOIR perf: кэшированный System.ball.get() вместо скана каждый кадр
+    return System.ball.get()
 end
 
 local function destroy_ball_stats()
@@ -16470,7 +16530,7 @@ __noirFeatures()
 -- NOIR v5: маркер сборки — уведомление при загрузке (видно, что работает новый файл)
 task.delay(2, function()
     pcall(function()
-        host.Notify("NOIR v5 loaded • 7 tabs: Home / Parry / Main / Visuals / World / Misc / Settings • Auto Parry boost", 5)
+        host.Notify("NOIR v6 loaded • 7 tabs: Home / Parry / Main / Visuals / World / Misc / Settings • Auto Parry v6 + ball perf", 5)
     end)
 end)
 
