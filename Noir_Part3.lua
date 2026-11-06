@@ -1,4 +1,4 @@
--- Protected by NRX2 2026-11-06 | Noir UI • Skins module (Pulse-grade weapon skinchanger)
+-- Protected by NRX2 2026-11-06 | Noir UI • NovaUI Part 3 • Skins module (Pulse-grade weapon skinchanger)
 local _b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 local function b64decode(data)
   data = data:gsub('[^'.._b..'=]', '')

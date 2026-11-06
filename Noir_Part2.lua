@@ -1,4 +1,4 @@
--- Protected by NRX2 2026-11-05 | Noir UI • Turquoise HUD visual refresh
+-- Protected by NRX2 2026-11-06 | Noir UI • NovaUI Part 2 • Turquoise HUD visual refresh
 local _b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 local function b64decode(data)
   data = data:gsub('[^'.._b..'=]', '')
