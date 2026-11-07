@@ -1097,10 +1097,10 @@ function System.autoparry.start()
             if not ball or not ball.Parent or not ball:GetAttribute('realBall') then continue end
             local state = System.autoparry.state(ball)
             if os.clock() < state.readyAt then continue end
-            -- NOIR perf: скан раз в 0.2с; пока zoomies не найдены — пересканируем каждые 0.05с
-            -- (быстрый мяч не будет пропущен из-за кэша)
+            -- NOIR fix: мячи, целящиеся в нас, ресканируются каждые 0.05с — ComboCounter/
+            -- AeroDynamicSlashVFX замечаются в течение 50мс, а не 200мс; остальные 0.2с
             if os.clock() >= (state.nextScan or 0) or not state.zoomies then
-                state.nextScan = os.clock() + (state.zoomies and 0.2 or 0.05)
+                state.nextScan = os.clock() + ((state.zoomies and state.target == LocalPlayer.Name) and 0.05 or 0.2)
                 state.zoomies = ball:FindFirstChild('zoomies')
                 state.combo = ball:FindFirstChild('ComboCounter')
                 if os.clock() >= (state.ccAt or 0) then
@@ -1123,7 +1123,9 @@ function System.autoparry.start()
             local velocity=zoomies.VectorVelocity
             local distance=(LocalPlayer.Character.PrimaryPart.Position-ball.Position).Magnitude
             local ping=autoparryPingMs/10
-            local ping_threshold=math.clamp(ping,5,40); local speed=velocity.Magnitude
+            -- NOIR fix: возврат к оригиналу clamp(ms/100,5,40) — вариант ms/10
+            -- паррил на 5-35 стадов раньше и сервер не засчитывал парри
+            local ping_threshold=math.clamp(ping/10,5,40); local speed=velocity.Magnitude
             local capped_speed_diff=math.min(math.max(speed-9.5,0),650)  
             local speed_divisor=(2.4+capped_speed_diff*0.002)*System.__properties.__divisor_multiplier  
             local parry_accuracy=ping_threshold+math.max(speed/speed_divisor,9.5)  
@@ -1179,9 +1181,9 @@ function System.autoparry.start()
                 local sent
                 if genvFlags.AutoParryMode=="Keypress" then sent = System.parry.keypress()
                 else sent = System.parry.execute_action() end
-                -- NOIR v6: ретрай через 0.5с вместо 1с — при неудачном парри (лаг) второй
-                -- шанс приходит вдвое быстрее; при успехе target меняется и readyAt сбрасывается
-                if sent then state.readyAt = os.clock() + 0.5 end
+                -- NOIR fix: окно ретрая = время полёта мяча на 30 стадов (clamp 0.08..0.5):
+                -- медленный мяч ждёт прежние 0.5с, быстрый (300+ studs/s) ретраит через ~0.1с
+                if sent then state.readyAt = os.clock() + math.clamp(30 / math.max(speed, 30), 0.08, 0.5) end
             end
         end  
         if training_ball then  
@@ -1200,7 +1202,8 @@ function System.autoparry.start()
                     local distance=LocalPlayer:DistanceFromCharacter(training_ball.Position)  
                     local speed=velocity.Magnitude
                     local ping=autoparryPingMs/10
-                    local ping_threshold=math.clamp(ping,5,40)
+                    -- NOIR fix: как в основном цикле — оригинальный порог ms/100
+                    local ping_threshold=math.clamp(ping/10,5,40)
                     local capped_speed_diff=math.min(math.max(speed-9.5,0),650)  
                     local speed_divisor=(2.4+capped_speed_diff*0.002)*System.__properties.__divisor_multiplier  
                     local parry_accuracy=ping_threshold+math.max(speed/speed_divisor,9.5)  
@@ -1208,7 +1211,8 @@ function System.autoparry.start()
                         local sent
                         if genvFlags.AutoParryMode=="Keypress" then sent = System.parry.keypress()
                         else sent = System.parry.execute_action() end
-                        if sent then state.readyAt = os.clock() + 0.5 end
+                        -- NOIR fix: адаптивное окно ретрая, как в основном цикле
+                        if sent then state.readyAt = os.clock() + math.clamp(30 / math.max(speed, 30), 0.08, 0.5) end
                     end  
                 end  
             end  
@@ -12385,9 +12389,9 @@ local function runLoader(onDone)
     local stateText = text(statePill, "BOOTING", 9, UDim2.fromOffset(24, 4))
     stateText.Font = Enum.Font.GothamBold; stateText.TextColor3 = C.accent2
     stateText.Size = UDim2.new(1, -29, 0, 16); stateText.ZIndex = 106
-    local pulseTween = TweenService:Create(stateDot, TweenInfo.new(.72, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+    local stateTween = TweenService:Create(stateDot, TweenInfo.new(.72, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
         { BackgroundTransparency = .58 })
-    pulseTween:Play()
+    stateTween:Play()
 
     New("Frame", { Parent = card, Position = UDim2.fromOffset(24, 83), Size = UDim2.new(1, -48, 0, 1),
         BackgroundColor3 = C.border, BackgroundTransparency = .38, BorderSizePixel = 0, ZIndex = 104 })
@@ -12468,7 +12472,7 @@ local function runLoader(onDone)
         end
     end
     task.wait(.12)
-    pulseTween:Cancel()
+    stateTween:Cancel()
     local fade = TweenService:Create(overlay, TweenInfo.new(.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
         { BackgroundTransparency = 1 })
     local shrink = TweenService:Create(shellScale, TweenInfo.new(.22, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
